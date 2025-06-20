@@ -3,6 +3,7 @@
 Enhanced FEDAO PDF Parser - Fully Dynamic with Security Extraction Fix
 Specifically designed for FRBNY MBS Small Value Operations PDFs
 100% dynamic parsing with zero hardcoded data + fixed security name extraction
+Settlement Date column removed
 """
 
 import re
@@ -20,7 +21,6 @@ class FEDAOParser:
             'OperationDate',
             'OperationTime', 
             'Operation Type',
-            'Settlement Date',
             'Securities Included (CUSP)',
             'Security Maximums (Millions)',
             'OperationMaximum',
@@ -214,7 +214,6 @@ class FEDAOParser:
                     'OperationDate': operation_date,
                     'OperationTime': operation_time,
                     'Operation Type': operation_type,
-                    'Settlement Date': '',
                     'Securities Included (CUSP)': security,
                     'Security Maximums (Millions)': amount,
                     'OperationMaximum': operation_maximum,
@@ -227,7 +226,6 @@ class FEDAOParser:
                 'OperationDate': operation_date,
                 'OperationTime': operation_time,
                 'Operation Type': operation_type,
-                'Settlement Date': '',
                 'Securities Included (CUSP)': securities[0],
                 'Security Maximums (Millions)': amount,
                 'OperationMaximum': operation_maximum,
@@ -245,7 +243,6 @@ class FEDAOParser:
                     'OperationDate': operation_date,
                     'OperationTime': operation_time,
                     'Operation Type': operation_type,
-                    'Settlement Date': '',
                     'Securities Included (CUSP)': security,
                     'Security Maximums (Millions)': amount,
                     'OperationMaximum': operation_maximum,
@@ -570,7 +567,6 @@ class FEDAOParser:
                 'OperationDate': date,
                 'OperationTime': time,
                 'Operation Type': op_type,
-                'Settlement Date': '',
                 'Securities Included (CUSP)': '',
                 'Security Maximums (Millions)': f"${amounts[0]} Million" if amounts else '',
                 'OperationMaximum': operation_maximum,
@@ -590,7 +586,6 @@ class FEDAOParser:
                     'OperationDate': date,
                     'OperationTime': time,
                     'Operation Type': self.determine_operation_type_from_security(security, op_type),
-                    'Settlement Date': '',
                     'Securities Included (CUSP)': security,
                     'Security Maximums (Millions)': security_amount,
                     'OperationMaximum': operation_maximum,
@@ -658,7 +653,7 @@ class FEDAOParser:
             return False
 
 def main():
-    parser = argparse.ArgumentParser(description='Enhanced FEDAO PDF Parser - Fully Dynamic')
+    parser = argparse.ArgumentParser(description='Enhanced FEDAO PDF Parser - Settlement Date Removed')
     parser.add_argument('input_pdf', help='Input PDF file path')
     parser.add_argument('output_csv', nargs='?', default='FEDAO_MOA_DATA.csv', help='Output CSV file path')
     parser.add_argument('--quiet', action='store_true', help='Disable debug output')

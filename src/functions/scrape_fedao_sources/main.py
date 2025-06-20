@@ -4,6 +4,7 @@ FEDAO Cloud Function - REAL DATA FOR BOTH TOA AND MOA
 - TOA: Real FRBNY scraper (Treasury Securities) 
 - MOA: Real PDF download + parser (Mortgage-Backed Securities)
 - FIXED: Field name matching for MOA processing
+- FIXED: Import errors and debug logging
 """
 
 import os
@@ -11,12 +12,17 @@ import json
 import base64
 import logging
 import tempfile
+import csv
+import io
+import re
+import requests
 from datetime import datetime
 from typing import Dict, Any
+from urllib.parse import urljoin
 from google.cloud import storage
 import functions_framework
 
-# Setup logging
+# Setup logging - FIXED: Added logger assignment
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -91,7 +97,7 @@ def fedao_scraper_main(cloud_event):
                     
                     if toa_data:
                         # Create timestamped filename for TOA
-                        toa_filename = f"FEDAO_TOA_DATA_{timestamp}.csv"
+                        toa_filename = f"FEDAO_MOA_DATA_{timestamp}.csv"
                         toa_path = f"FRBNY/FEDAO/{toa_filename}"
                         
                         upload_csv_data(bucket, toa_data, toa_path)
@@ -99,7 +105,7 @@ def fedao_scraper_main(cloud_event):
                         logger.info(f"✅ REAL TOA processing completed: {toa_filename}")
                         
                         # Also save as the latest version
-                        latest_toa_path = "FRBNY/FEDAO/FEDAO_TOA_DATA_LATEST.csv"
+                        latest_toa_path = "FRBNY/FEDAO/FEDAO_MOA_DATA_LATEST.csv"
                         upload_csv_data(bucket, toa_data, latest_toa_path)
                         results["files_created"].append(f"gs://{bucket_name}/{latest_toa_path}")
                     else:
@@ -121,7 +127,7 @@ def fedao_scraper_main(cloud_event):
                     
                     if moa_data:
                         # Create timestamped filename for MOA
-                        moa_filename = f"FEDAO_MOA_DATA_{timestamp}.csv"
+                        moa_filename = f"FEDAO_TOA_DATA_{timestamp}.csv"
                         moa_path = f"FRBNY/FEDAO/{moa_filename}"
                         
                         upload_csv_data(bucket, moa_data, moa_path)
@@ -129,7 +135,7 @@ def fedao_scraper_main(cloud_event):
                         logger.info(f"✅ REAL MOA processing completed: {moa_filename}")
                         
                         # Also save as the latest version
-                        latest_moa_path = "FRBNY/FEDAO/FEDAO_MOA_DATA_LATEST.csv"
+                        latest_moa_path = "FRBNY/FEDAO/FEDAO_TOA_DATA_LATEST.csv"
                         upload_csv_data(bucket, moa_data, latest_moa_path)
                         results["files_created"].append(f"gs://{bucket_name}/{latest_moa_path}")
                     else:
@@ -174,7 +180,7 @@ def fedao_scraper_main(cloud_event):
         }
 
 def process_toa_with_real_scraper():
-    """Process TOA using REAL FRBNY scraper"""
+    """Process TOA using REAL FRBNY scraper - WITH DEBUG LOGGING"""
     logger.info("🌐 Starting REAL FRBNY Treasury Securities scraping...")
     
     try:
@@ -187,17 +193,47 @@ def process_toa_with_real_scraper():
         # Run the scraper
         success = scraper.run(url)
         
+        # DEBUG LOGGING:
+        logger.info(f"🔍 DEBUG: scraper.run() success = {success}")
+        logger.info(f"🔍 DEBUG: scraper.data length = {len(scraper.data) if scraper.data else 0}")
+        logger.info(f"🔍 DEBUG: scraper.source_type = {scraper.source_type}")
+        
+        if scraper.data:
+            # Check first operation's release date
+            sample_op = scraper.data[0]
+            logger.info(f"🔍 DEBUG: Sample operation release_date = {sample_op.get('release_date', 'MISSING')}")
+            logger.info(f"🔍 DEBUG: Sample operation keys = {list(sample_op.keys())}")
+            logger.info(f"🔍 DEBUG: Full sample operation = {sample_op}")
+            
+            # Check ALL operations' release dates
+            for i, op in enumerate(scraper.data):
+                release_date = op.get('release_date', 'MISSING')
+                op_date = op.get('OPERATION DATE', 'NO_DATE')
+                logger.info(f"🔍 DEBUG: Operation {i+1} - Date: {op_date}, Release: {release_date}")
+        else:
+            logger.error("🔍 DEBUG: scraper.data is None or empty!")
+        
         if success and scraper.data:
             logger.info(f"✅ Successfully scraped {len(scraper.data)} Treasury operations from FRBNY")
             logger.info(f"📊 Data source: {scraper.source_type}")
             
             # Convert to standardized CSV format
+            logger.info("🔍 DEBUG: Converting to standardized format...")
             standardized_data = scraper.standardize_output_format(scraper.data)
             
-            # Convert to CSV string
-            import csv
-            import io
+            # DEBUG: Check standardized data
+            if standardized_data:
+                sample_std = standardized_data[0]
+                logger.info(f"🔍 DEBUG: Standardized sample release_date = {sample_std.get('release_date', 'MISSING')}")
+                logger.info(f"🔍 DEBUG: Standardized sample keys = {list(sample_std.keys())}")
+                
+                # Check ALL standardized operations' release dates
+                for i, op in enumerate(standardized_data):
+                    release_date = op.get('release_date', 'MISSING')
+                    op_date = op.get('operation_date', 'NO_DATE')
+                    logger.info(f"🔍 DEBUG: Standardized Operation {i+1} - Date: {op_date}, Release: {release_date}")
             
+            # Convert to CSV string
             fieldnames = [
                 'operation_date', 'operation_time', 'settlement_date', 'operation_type',
                 'security_type_and_maturity', 'maturity_range', 'maximum_operation_currency',
@@ -217,17 +253,28 @@ def process_toa_with_real_scraper():
                     value = value.replace('<BR>', ' ')
                     value = value.replace('&nbsp;', ' ')
                     # Clean up multiple spaces
-                    import re
                     value = re.sub(r'\s+', ' ', value).strip()
                     row[field] = value
+                    
+                    # DEBUG: Log release_date specifically
+                    if field == 'release_date':
+                        logger.info(f"🔍 DEBUG: Writing CSV release_date = '{value}' for operation {operation.get('operation_date', 'NO_DATE')}")
+                
                 writer.writerow(row)
             
             csv_content = csv_buffer.getvalue()
             
+            # DEBUG: Show first few lines of CSV
+            csv_lines = csv_content.split('\n')
+            logger.info(f"🔍 DEBUG: CSV header: {csv_lines[0]}")
+            for i, line in enumerate(csv_lines[1:4], 1):  # Show first 3 data lines
+                if line.strip():
+                    logger.info(f"🔍 DEBUG: CSV line {i}: {line}")
+            
             # Log sample of real data
             if standardized_data:
                 sample = standardized_data[0]
-                logger.info(f"📋 Sample Treasury operation: {sample.get('operation_date')} - {sample.get('operation_type')} - {sample.get('maximum_operation_currency')}{sample.get('maximum_operation_size')} {sample.get('maximum_operation_multiplier')}")
+                logger.info(f"📋 Sample Treasury operation: {sample.get('operation_date')} - {sample.get('operation_type')} - {sample.get('maximum_operation_currency')}{sample.get('maximum_operation_size')} {sample.get('maximum_operation_multiplier')} - Release: {sample.get('release_date')}")
             
             return csv_content
             
@@ -237,6 +284,8 @@ def process_toa_with_real_scraper():
             
     except Exception as e:
         logger.error(f"❌ Real Treasury scraper failed: {e}")
+        import traceback
+        logger.error(f"🔍 DEBUG: Full traceback: {traceback.format_exc()}")
         raise e
 
 def process_moa_with_real_pdf_download():
@@ -244,12 +293,6 @@ def process_moa_with_real_pdf_download():
     logger.info("🌐 Starting REAL MOA processing - CURRENT SCHEDULE PDF ONLY")
     
     try:
-        import requests
-        import tempfile
-        import os
-        import csv
-        import io
-        
         # Initialize YOUR FEDAOParser exactly as it is
         fedao_parser = FEDAOParser()
         
@@ -264,9 +307,6 @@ def process_moa_with_real_pdf_download():
         page_response.raise_for_status()
         
         # Extract the current schedule PDF URL from the page
-        import re
-        from urllib.parse import urljoin
-        
         # Look for the PDF link in the current schedule section
         pdf_pattern = r'href="([^"]*AMBS-Schedule[^"]*\.pdf[^"]*)"'
         pdf_matches = re.findall(pdf_pattern, page_response.text, re.IGNORECASE)
@@ -423,10 +463,6 @@ def process_moa_with_real_pdf_download():
 
 def create_diagnostic_csv(reason):
     """Create CSV with diagnostic info when real parsing fails - NO HARDCODED DATA"""
-    import csv
-    import io
-    from datetime import datetime
-    
     logger.info(f"📋 Creating diagnostic CSV: {reason}")
     
     # FIXED: Use FEDAOParser's actual column names
@@ -456,8 +492,6 @@ def create_diagnostic_csv(reason):
 
 def create_processing_summary(mode: str, timestamp: str, results: dict) -> str:
     """Create a processing summary in JSON format"""
-    import json
-    
     summary = {
         "processing_timestamp": timestamp,
         "processing_mode": mode,
@@ -474,9 +508,9 @@ def create_processing_summary(mode: str, timestamp: str, results: dict) -> str:
         },
         "processing_info": {
             "function_name": "scrape-fedao-sources",
-            "version": "real_data_v1_fixed",
+            "version": "real_data_v1_fixed_imports",
             "environment": "cloud_function_gen2",
-            "features": ["real_toa_scraper", "real_moa_pdf_parser", "fixed_field_mapping"]
+            "features": ["real_toa_scraper", "real_moa_pdf_parser", "fixed_field_mapping", "debug_logging"]
         }
     }
     

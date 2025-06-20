@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Complete FRBNY Scraper - Web First, PDF Fallback (Pipeline Compatible)
-Integrates proven web scraping method with PDF fallback and pipeline compatibility
+Complete FRBNY Scraper - Fixed Release Date Extraction
+Web First, PDF Fallback (Pipeline Compatible)
+Fixed to extract release date from first <td> element only
 """
 
 import os
@@ -30,14 +31,14 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class CombinedFRBNYScraper:
-    """Complete scraper for FRBNY data - Web first, PDF fallback (Pipeline Compatible)"""
+    """Complete scraper for FRBNY data - Web first, PDF fallback with FIXED release date extraction"""
     
     def __init__(self):
         self.data = []
         self.source_type = None  # 'web' or 'pdf'
         
     def setup_driver(self):
-        """Setup Chrome driver with appropriate options - proven working version"""
+        """Setup Chrome driver with appropriate options"""
         chrome_options = Options()
         
         # Check if running in cloud environment
@@ -53,7 +54,6 @@ class CombinedFRBNYScraper:
             chrome_options.binary_location = os.environ.get('CHROME_BIN', '/opt/chrome/chrome')
         else:
             # Local environment - can run without headless for debugging
-            # Remove headless mode to help with JavaScript execution during development
             # Uncomment next line for debugging: chrome_options.add_argument("--headless")
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
@@ -117,28 +117,422 @@ class CombinedFRBNYScraper:
         logger.debug(f"Parsed result: {result}")
         return result
 
+    def extract_release_date_from_web_simple(self, base_url):
+        """FIXED: Extract release date focusing ONLY on the first <td> element in the table"""
+        logger.info("🌐 Extracting release date from first TD element only...")
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
+            'Cache-Control': 'no-cache'
+        }
+        
+        max_attempts = 5
+        base_wait_time = 30  # 30 seconds base wait time
+        
+        for attempt in range(max_attempts):
+            try:
+                if attempt == 0:
+                    logger.info("🔍 Attempt 1/5: Immediate request...")
+                else:
+                    wait_time = base_wait_time + (attempt - 1) * 15  # 30, 45, 60, 75 seconds
+                    logger.info(f"⏰ Retry attempt {attempt + 1}/5, waiting {wait_time} seconds for table content to load...")
+                    time.sleep(wait_time)
+                
+                logger.info(f"📡 Making HTTP request to: {base_url}")
+                response = requests.get(base_url, headers=headers, timeout=60)
+                response.raise_for_status()
+                
+                page_content = response.text
+                logger.info(f"📄 Received {len(page_content)} characters of content")
+                
+                # STRATEGY: Focus ONLY on the first <td> in the table structure
+                logger.info("🎯 Looking specifically for first <td> element in pagination table...")
+                
+                # Look for the table structure with id="pagination-table"
+                table_pattern = r'<table[^>]*id=["\']pagination-table["\'][^>]*>.*?<tbody[^>]*id=["\']data-container["\'][^>]*>(.*?)</tbody>'
+                table_match = re.search(table_pattern, page_content, re.DOTALL | re.IGNORECASE)
+                
+                if table_match:
+                    tbody_content = table_match.group(1)
+                    logger.info("✅ Found pagination table with data-container tbody")
+                    
+                    # Look for the first <tr> and then the first <td>
+                    first_row_pattern = r'<tr[^>]*>\s*<td[^>]*>(.*?)</td>'
+                    first_td_match = re.search(first_row_pattern, tbody_content, re.DOTALL | re.IGNORECASE)
+                    
+                    if first_td_match:
+                        first_td_content = first_td_match.group(1)
+                        logger.info(f"🎯 Found first TD content: '{first_td_content}'")
+                        
+                        # Clean up the content (remove HTML tags, normalize whitespace)
+                        clean_content = re.sub(r'<[^>]+>', ' ', first_td_content)  # Remove HTML tags
+                        clean_content = re.sub(r'\s+', ' ', clean_content.strip())  # Normalize whitespace
+                        logger.info(f"🧹 Cleaned TD content: '{clean_content}'")
+                        
+                        # Look for date pattern in the cleaned content
+                        # Pattern: "6/13/2025 - 7/14/2025" or "6/13/2025 -<br>7/14/2025"
+                        date_pattern = r'(\d{1,2}/\d{1,2}/\d{4})\s*-\s*(\d{1,2}/\d{1,2}/\d{4})'
+                        date_match = re.search(date_pattern, clean_content)
+                        
+                        if date_match:
+                            start_date = date_match.group(1)
+                            end_date = date_match.group(2)
+                            
+                            logger.info(f"📅 Found operation period in first TD: {start_date} - {end_date}")
+                            
+                            # Validate the dates
+                            try:
+                                start_obj = datetime.strptime(start_date, '%m/%d/%Y')
+                                end_obj = datetime.strptime(end_date, '%m/%d/%Y')
+                                
+                                current_year = datetime.now().year
+                                
+                                # Ensure dates are current year or later
+                                if start_obj.year >= current_year and end_obj.year >= current_year:
+                                    # Use the end date as release date
+                                    release_date = str(int(end_obj.strftime('%Y%m%d')))
+                                    
+                                    logger.info(f"✅ SUCCESS on attempt {attempt + 1}!")
+                                    logger.info(f"📅 Operation period: {start_date} - {end_date}")
+                                    logger.info(f"🎯 Using end date as release date: {end_date} -> {release_date}")
+                                    
+                                    return release_date
+                                else:
+                                    logger.warning(f"⚠️  Dates are from old year: {start_obj.year}-{end_obj.year}")
+                            
+                            except ValueError as e:
+                                logger.warning(f"⚠️  Could not parse dates: {e}")
+                        else:
+                            logger.warning(f"⚠️  No date pattern found in first TD content: '{clean_content}'")
+                    else:
+                        logger.warning("⚠️  Could not find first <td> element in table")
+                else:
+                    logger.warning("⚠️  Could not find pagination table with data-container")
+                    
+                    # Fallback: Look for ANY table with the expected structure
+                    logger.info("🔄 Fallback: Looking for any table with period data...")
+                    fallback_pattern = r'<td[^>]*>([^<]*\d{1,2}/\d{1,2}/\d{4}[^<]*-[^<]*\d{1,2}/\d{1,2}/\d{4}[^<]*)</td>'
+                    fallback_matches = re.findall(fallback_pattern, page_content, re.IGNORECASE)
+                    
+                    if fallback_matches:
+                        logger.info(f"🔄 Found {len(fallback_matches)} potential period TDs")
+                        
+                        # Take the first match (should be most recent)
+                        first_match = fallback_matches[0]
+                        clean_match = re.sub(r'<[^>]+>', ' ', first_match).strip()
+                        clean_match = re.sub(r'\s+', ' ', clean_match)
+                        
+                        logger.info(f"🔄 First fallback match: '{clean_match}'")
+                        
+                        date_pattern = r'(\d{1,2}/\d{1,2}/\d{4})\s*-\s*(\d{1,2}/\d{1,2}/\d{4})'
+                        date_match = re.search(date_pattern, clean_match)
+                        
+                        if date_match:
+                            start_date = date_match.group(1)
+                            end_date = date_match.group(2)
+                            
+                            try:
+                                end_obj = datetime.strptime(end_date, '%m/%d/%Y')
+                                current_year = datetime.now().year
+                                
+                                if end_obj.year >= current_year:
+                                    release_date = str(int(end_obj.strftime('%Y%m%d')))
+                                    logger.info(f"✅ FALLBACK SUCCESS on attempt {attempt + 1}: {start_date} - {end_date} -> {release_date}")
+                                    return release_date
+                            except ValueError:
+                                pass
+                
+                # If we get here, this attempt failed
+                if attempt < max_attempts - 1:
+                    logger.warning(f"❌ Attempt {attempt + 1} failed, will retry with longer wait...")
+                    continue
+                else:
+                    logger.error(f"❌ Final attempt {attempt + 1} failed")
+                    
+            except requests.exceptions.Timeout:
+                logger.warning(f"⏱️  Attempt {attempt + 1} timed out after 60 seconds")
+                continue
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"📡 Attempt {attempt + 1} request failed: {e}")
+                continue
+            except Exception as e:
+                logger.warning(f"❌ Attempt {attempt + 1} failed with error: {e}")
+                continue
+        
+        # If all attempts failed
+        logger.error(f"❌ All {max_attempts} attempts failed to extract release date from first TD")
+        logger.error("💡 Expected format: <td>6/13/2025 -<br>7/14/2025</td>")
+        return None
+
+    def extract_release_date_with_beautifulsoup(self, base_url):
+        """Alternative method using BeautifulSoup for more reliable HTML parsing"""
+        try:
+            from bs4 import BeautifulSoup
+            
+            logger.info("🍲 Using BeautifulSoup for HTML parsing...")
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            # Wait 30 seconds before making request to allow content to load
+            logger.info("⏰ Waiting 30 seconds for content to load...")
+            time.sleep(30)
+            
+            response = requests.get(base_url, headers=headers, timeout=60)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Look for the pagination table
+            pagination_table = soup.find('table', {'id': 'pagination-table'})
+            
+            if pagination_table:
+                # Find the data container tbody
+                data_container = pagination_table.find('tbody', {'id': 'data-container'})
+                
+                if data_container:
+                    # Get the first row
+                    first_row = data_container.find('tr')
+                    
+                    if first_row:
+                        # Get the first cell
+                        first_cell = first_row.find('td')
+                        
+                        if first_cell:
+                            cell_text = first_cell.get_text(strip=True)
+                            logger.info(f"🎯 First cell text: '{cell_text}'")
+                            
+                            # Extract date pattern
+                            date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})\s*-\s*(\d{1,2}/\d{1,2}/\d{4})', cell_text)
+                            
+                            if date_match:
+                                start_date = date_match.group(1)
+                                end_date = date_match.group(2)
+                                
+                                end_obj = datetime.strptime(end_date, '%m/%d/%Y')
+                                release_date = str(int(end_obj.strftime('%Y%m%d')))
+                                
+                                logger.info(f"✅ BeautifulSoup SUCCESS: {start_date} - {end_date} -> {release_date}")
+                                return release_date
+            
+            logger.warning("❌ BeautifulSoup method failed to find expected structure")
+            return None
+            
+        except ImportError:
+            logger.warning("⚠️  BeautifulSoup not available, skipping this method")
+            return None
+        except Exception as e:
+            logger.warning(f"❌ BeautifulSoup method failed: {e}")
+            return None
+
+    def _validate_and_convert_date_pair(self, start_date_str, end_date_str, attempt_num):
+        """Helper method to validate a date pair with enhanced checks"""
+        try:
+            start_obj = datetime.strptime(start_date_str, '%m/%d/%Y')
+            end_obj = datetime.strptime(end_date_str, '%m/%d/%Y')
+            
+            current_year = datetime.now().year
+            
+            # Both dates should be current year or later
+            if start_obj.year >= current_year and end_obj.year >= current_year:
+                # End date should be after start date
+                if end_obj >= start_obj:
+                    # Date range should be reasonable (not too long)
+                    days_diff = (end_obj - start_obj).days
+                    if 1 <= days_diff <= 365:  # Between 1 day and 1 year
+                        logger.info(f"✅ Valid date pair: {start_date_str} - {end_date_str} ({days_diff} days)")
+                        return True
+                    else:
+                        logger.debug(f"❌ Date range too long: {days_diff} days")
+                else:
+                    logger.debug(f"❌ End date before start date: {start_date_str} > {end_date_str}")
+            else:
+                logger.debug(f"❌ Old dates: {start_obj.year}, {end_obj.year} (need >= {current_year})")
+            
+            return False
+            
+        except ValueError as e:
+            logger.debug(f"❌ Date parsing failed: {e}")
+            return False
+
+    def _is_reasonable_release_date(self, release_date_str):
+        """Helper method to check if release date is reasonable with enhanced validation"""
+        try:
+            date_obj = datetime.strptime(release_date_str, '%Y%m%d')
+            today = datetime.now()
+            
+            # Should be within reasonable range
+            min_date = datetime(today.year - 1, 1, 1)  # Not older than last year
+            max_date = datetime(today.year + 2, 12, 31)  # Not more than 2 years future
+            
+            if min_date <= date_obj <= max_date:
+                # Additional check: not too far in the past or future from today
+                days_diff = abs((date_obj - today).days)
+                if days_diff <= 365:  # Within 1 year of today
+                    logger.debug(f"✅ Release date {release_date_str} is reasonable ({days_diff} days from today)")
+                    return True
+                else:
+                    logger.warning(f"⚠️  Release date {release_date_str} is {days_diff} days from today (seems far)")
+                    return True  # Still accept but warn
+            else:
+                logger.warning(f"❌ Date {release_date_str} outside reasonable range {min_date.strftime('%Y%m%d')} - {max_date.strftime('%Y%m%d')}")
+                return False
+                
+        except Exception as e:
+            logger.warning(f"❌ Date validation failed for {release_date_str}: {e}")
+            return False
+
+    def calculate_dataset_release_date(self, operations: List[Dict], driver=None) -> str:
+        """FIXED: Calculate release date using the improved extraction method"""
+        base_url = "https://www.newyorkfed.org/markets/domestic-market-operations/monetary-policy-implementation/treasury-securities/treasury-securities-operational-details"
+        
+        # Try the improved web extraction first
+        release_date = self.extract_release_date_from_web_simple(base_url)
+        
+        if release_date and self._is_reasonable_release_date(release_date):
+            logger.info(f"✅ Using web-extracted release date: {release_date}")
+            return release_date
+        
+        # Try BeautifulSoup as secondary method
+        logger.info("🔄 Trying BeautifulSoup method...")
+        release_date = self.extract_release_date_with_beautifulsoup(base_url)
+        
+        if release_date and self._is_reasonable_release_date(release_date):
+            logger.info(f"✅ Using BeautifulSoup-extracted release date: {release_date}")
+            return release_date
+        
+        # Fallback 1: Try to extract from browser if driver is available
+        if driver:
+            try:
+                browser_release_date = self.extract_operation_period_end_date(driver)
+                if browser_release_date and self._is_reasonable_release_date(browser_release_date):
+                    logger.info(f"✅ Using browser-extracted release date: {browser_release_date}")
+                    return browser_release_date
+            except Exception as e:
+                logger.warning(f"Browser extraction failed: {e}")
+        
+        # Fallback 2: Use maximum date from operations (original logic)
+        logger.warning("All extraction methods failed, using fallback method...")
+        max_date = None
+        for operation in operations:
+            for date_field in ['OPERATION DATE', 'SETTLEMENT DATE']:
+                date_str = operation.get(date_field, '')
+                if date_str:
+                    try:
+                        date_obj = datetime.strptime(date_str, '%m/%d/%Y')
+                        if max_date is None or date_obj > max_date:
+                            max_date = date_obj
+                    except ValueError:
+                        continue
+        
+        if max_date:
+            release_date = str(int(max_date.strftime('%Y%m%d')))
+            logger.info(f"✅ Using maximum operation date as release date: {release_date}")
+            return release_date
+        else:
+            # Final fallback: current date
+            fallback_date = str(int(datetime.now().strftime('%Y%m%d')))
+            logger.warning(f"⚠️  No valid dates found anywhere, using current date: {fallback_date}")
+            return fallback_date
+
+    def apply_release_date_to_operations(self, operations: List[Dict], driver=None) -> List[Dict]:
+        """UPDATED: Apply the calculated release date using improved extraction"""
+        if not operations:
+            return operations
+        
+        # Calculate the release date using the improved method
+        dataset_release_date = self.calculate_dataset_release_date(operations, driver)
+        
+        # Apply to all operations
+        for operation in operations:
+            operation['release_date'] = int(dataset_release_date)
+        
+        logger.info(f"✅ Applied release date {dataset_release_date} to {len(operations)} operations")
+        return operations
+
+    def extract_operation_period_end_date(self, driver=None) -> str:
+        """Extract the operation period end date from the Operation Period Details tab"""
+        release_date = None
+        
+        if driver:
+            try:
+                # Try to find the operation period details tab and extract the period
+                operation_period_tab = driver.find_element(By.ID, "tab1")
+                if "ui-tabs-active" not in operation_period_tab.get_attribute("class"):
+                    logger.info("Clicking Operation Period Details tab to extract release date...")
+                    operation_period_tab.click()
+                    time.sleep(2)
+                
+                # Look for the operation period details content
+                period_details_div = driver.find_element(By.ID, "operation-period-details")
+                
+                # Find the table with period information
+                table = period_details_div.find_element(By.TAG_NAME, "table")
+                rows = table.find_elements(By.TAG_NAME, "tr")
+                
+                for row in rows:
+                    cells = row.find_elements(By.TAG_NAME, "td")
+                    if cells and len(cells) > 0:
+                        period_text = cells[0].text.strip()
+                        # Look for pattern like "6/13/2025 - 7/14/2025"
+                        period_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})\s*-\s*(\d{1,2}/\d{1,2}/\d{4})', period_text)
+                        if period_match:
+                            end_date_str = period_match.group(2)
+                            try:
+                                end_date_obj = datetime.strptime(end_date_str, '%m/%d/%Y')
+                                release_date = str(int(end_date_obj.strftime('%Y%m%d')))
+                                logger.info(f"Found operation period end date: {end_date_str} -> {release_date}")
+                                break
+                            except ValueError as e:
+                                logger.warning(f"Could not parse period end date '{end_date_str}': {e}")
+                
+            except Exception as e:
+                logger.warning(f"Could not extract operation period end date from web: {e}")
+        
+        # Fallback: extract from URL or use current date
+        if not release_date:
+            fallback_date = str(int(datetime.now().strftime('%Y%m%d')))
+            logger.warning(f"Could not find operation period end date, using current date: {fallback_date}")
+            return fallback_date
+        
+        return release_date
+
     def scrape_current_schedule_table(self, url):
         """Scrape the current schedule table from FRBNY website"""
         
+        logger.info("=== SCRAPE_CURRENT_SCHEDULE_TABLE CALLED ===")
+        
         # First try direct CSV access
+        logger.info("Attempting direct CSV fetch...")
         csv_data = self.fetch_csv_direct(url)
         if csv_data:
+            logger.info(f"✅ Direct CSV fetch succeeded - got {len(csv_data)} operations")
             return csv_data
         
+        logger.info("❌ Direct CSV fetch failed, falling back to browser scraping...")
         # Fallback to browser scraping using the proven working method
-        return self.scrape_with_browser(url)
+        browser_data = self.scrape_with_browser(url)
+        if browser_data:
+            logger.info(f"✅ Browser scraping succeeded - got {len(browser_data)} operations")
+        else:
+            logger.error("❌ Browser scraping also failed")
+        return browser_data
     
     def fetch_csv_direct(self, base_url):
-        """Directly fetch the CSV file that populates the table"""
+        """IMPROVED: Direct CSV fetch with better release date handling"""
         try:
             # Extract base URL
             base_site_url = base_url.split('/markets')[0]
             csv_url = urljoin(base_site_url, '/medialibrary/media/markets/treasury-securities-schedule/current-schedule.csv')
             
-            logger.info(f"Attempting to fetch CSV directly from: {csv_url}")
+            logger.info(f"📊 Attempting to fetch CSV directly from: {csv_url}")
             
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
             
             response = requests.get(csv_url, headers=headers, timeout=30)
@@ -146,17 +540,38 @@ class CombinedFRBNYScraper:
             
             # Parse CSV content
             csv_content = response.text
-            
-            logger.info("Successfully fetched CSV, parsing content...")
+            logger.info("✅ Successfully fetched CSV, parsing content...")
             
             # Use pandas to parse CSV
             df = pd.read_csv(io.StringIO(csv_content))
-            
-            logger.info(f"CSV parsed successfully. Shape: {df.shape}")
-            logger.info(f"Columns: {list(df.columns)}")
+            logger.info(f"📈 CSV parsed successfully. Shape: {df.shape}")
+            logger.info(f"📋 Columns: {list(df.columns)}")
             
             # Process the data to match expected format
             processed_data = self.process_csv_data(df)
+            
+            # CRITICAL: Extract release date using improved method with 30s wait
+            if processed_data:
+                logger.info("🔍 EXTRACTING RELEASE DATE FOR CSV DATA WITH FIXED METHOD...")
+                
+                # Use the improved extraction method with extended wait time
+                release_date = self.extract_release_date_from_web_simple(base_url)
+                
+                if not release_date:
+                    # Try BeautifulSoup as backup
+                    logger.info("🔄 Trying BeautifulSoup as backup...")
+                    release_date = self.extract_release_date_with_beautifulsoup(base_url)
+                
+                if release_date and self._is_reasonable_release_date(release_date):
+                    logger.info(f"✅ Applying extracted release date {release_date} to {len(processed_data)} operations")
+                    for operation in processed_data:
+                        operation['release_date'] = int(release_date)
+                else:
+                    logger.warning("⚠️  Could not extract valid release date, using current date as fallback")
+                    current_date = str(int(datetime.now().strftime('%Y%m%d')))
+                    logger.warning(f"🔄 Using fallback date: {current_date}")
+                    for operation in processed_data:
+                        operation['release_date'] = int(current_date)
             
             if processed_data:
                 self.data = processed_data
@@ -164,7 +579,7 @@ class CombinedFRBNYScraper:
                 return processed_data
             
         except Exception as e:
-            logger.warning(f"Direct CSV fetch failed: {str(e)}")
+            logger.warning(f"❌ Direct CSV fetch failed: {str(e)}")
             
         return None
     
@@ -202,10 +617,10 @@ class CombinedFRBNYScraper:
                     'OPERATION TYPE': '',
                     'SECURITY TYPE AND MATURITY': '',
                     'MATURITY RANGE': '',
-                    'MAXIMUM OPERATION CURRENCY': '$',
+                    'MAXIMUM OPERATION CURRENCY': '',
                     'MAXIMUM OPERATION SIZE': '',
                     'MAXIMUM OPERATION MULTIPLIER': '',
-                    'release_date': ''
+                    'release_date': ''  # Will be set by apply_release_date_to_operations
                 }
                 
                 # Map data from CSV to operation format
@@ -224,15 +639,12 @@ class CombinedFRBNYScraper:
                         if operation_key in operation:
                             operation[operation_key] = value
                 
-                # Set release date
-                current_date = datetime.now().strftime('%Y%m%d')
-                operation['release_date'] = int(current_date)
-                
                 # Only add if we have essential data
                 if operation['OPERATION DATE'] and operation['OPERATION TYPE']:
                     processed_data.append(operation)
                     logger.info(f"Processed operation: {operation['OPERATION DATE']} | {operation['OPERATION TYPE']}")
             
+            # Note: Release date will be applied later when we have access to the driver
             logger.info(f"Successfully processed {len(processed_data)} operations from CSV")
             return processed_data
             
@@ -248,6 +660,9 @@ class CombinedFRBNYScraper:
             logger.error("Could not setup web driver")
             return None
         
+        # Store the release date extracted from Operation Period Details
+        extracted_release_date = None
+        
         try:
             logger.info("Loading the webpage...")
             driver.get(url)
@@ -255,7 +670,104 @@ class CombinedFRBNYScraper:
             # Wait for the page to load
             wait = WebDriverWait(driver, 30)
             
-            # Wait for the tabs to be clickable and click on "Current Schedule" tab if not active
+            # FIRST: Extract the operation period end date from the default Operation Period Details tab
+            try:
+                logger.info("Extracting release date from Operation Period Details tab...")
+                
+                # WAIT FOR MONTHLY DETAILS CONTENT TO LOAD
+                logger.info("Waiting for monthly details content to load...")
+                
+                # Wait for the monthly-details div to be present (this is the correct ID!)
+                wait.until(EC.presence_of_element_located((By.ID, "monthly-details")))
+                logger.info("Monthly details div found, waiting for content...")
+                
+                # Wait additional time for AJAX/JavaScript to populate the content
+                time.sleep(3)
+                
+                # Wait for actual content with date pattern to appear
+                def content_has_date_pattern(driver):
+                    try:
+                        element = driver.find_element(By.ID, "monthly-details")
+                        text = element.text.strip()
+                        has_pattern = bool(re.search(r'\d{1,2}/\d{1,2}/\d{4}\s*-\s*\d{1,2}/\d{1,2}/\d{4}', text))
+                        logger.debug(f"Checking for date pattern in monthly-details: Found: {has_pattern}")
+                        return has_pattern
+                    except:
+                        return False
+                
+                # Wait up to 15 seconds for content with date pattern to appear
+                logger.info("Waiting for date pattern to appear in monthly-details...")
+                try:
+                    WebDriverWait(driver, 15).until(content_has_date_pattern)
+                    logger.info("Date pattern detected in monthly-details!")
+                except Exception as e:
+                    logger.warning(f"Timeout waiting for date pattern: {e}")
+                    logger.info("Proceeding anyway to check what content is available...")
+                
+                # NOW extract the release date from the correct element
+                extracted_release_date = None
+                
+                try:
+                    element = driver.find_element(By.ID, "monthly-details")
+                    element_text = element.text.strip()
+                    logger.info(f"Found monthly-details element with text: '{element_text[:200]}...'")
+                    
+                    # Look for the FIRST date pattern (should be the current period)
+                    period_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})\s*-\s*(\d{1,2}/\d{1,2}/\d{4})', element_text)
+                    if period_match:
+                        start_date_str = period_match.group(1)
+                        end_date_str = period_match.group(2)
+                        
+                        # Use the end date as release date
+                        end_date_obj = datetime.strptime(end_date_str, '%m/%d/%Y')
+                        extracted_release_date = str(int(end_date_obj.strftime('%Y%m%d')))
+                        
+                        logger.info(f"SUCCESS! Found operation period: {start_date_str} - {end_date_str}")
+                        logger.info(f"Using end date as release date: {end_date_str} -> {extracted_release_date}")
+                    else:
+                        logger.warning("No date pattern found in monthly-details element")
+                        
+                except Exception as e:
+                    logger.error(f"Error extracting from monthly-details: {e}")
+                
+                # Fallback: try ui-tabs-panel class if monthly-details fails
+                if not extracted_release_date:
+                    logger.info("Fallback: trying ui-tabs-panel class...")
+                    try:
+                        panels = driver.find_elements(By.CLASS_NAME, "ui-tabs-panel")
+                        logger.info(f"Found {len(panels)} ui-tabs-panel elements")
+                        
+                        for i, panel in enumerate(panels):
+                            panel_text = panel.text.strip()
+                            if panel_text and len(panel_text) > 50:  # Only check substantial content
+                                logger.info(f"Checking panel {i+1} with text: '{panel_text[:100]}...'")
+                                
+                                period_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})\s*-\s*(\d{1,2}/\d{1,2}/\d{4})', panel_text)
+                                if period_match:
+                                    start_date_str = period_match.group(1)
+                                    end_date_str = period_match.group(2)
+                                    
+                                    end_date_obj = datetime.strptime(end_date_str, '%m/%d/%Y')
+                                    extracted_release_date = str(int(end_date_obj.strftime('%Y%m%d')))
+                                    
+                                    logger.info(f"SUCCESS! Found period in panel {i+1}: {start_date_str} - {end_date_str}")
+                                    logger.info(f"Using end date as release date: {end_date_str} -> {extracted_release_date}")
+                                    break
+                                    
+                    except Exception as e:
+                        logger.error(f"Error with fallback method: {e}")
+                
+                if not extracted_release_date:
+                    logger.error("FAILED: Could not extract release date from any method")
+                else:
+                    logger.info(f"FINAL RESULT: extracted_release_date = {extracted_release_date}")
+                    
+            except Exception as e:
+                logger.error(f"CRITICAL ERROR in release date extraction: {e}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # SECOND: Now switch to Current Schedule tab to get operations data
             try:
                 current_schedule_tab = wait.until(
                     EC.element_to_be_clickable((By.ID, "tab2"))
@@ -358,14 +870,24 @@ class CombinedFRBNYScraper:
                     'OPERATION TYPE': row.get('Operation Type', ''),
                     'SECURITY TYPE AND MATURITY': row.get('Security Type and Maturity', ''),
                     'MATURITY RANGE': row.get('Maturity Range', ''),
-                    'MAXIMUM OPERATION CURRENCY': row.get('MAXIMUM OPERATION CURRENCY', '$'),
+                    'MAXIMUM OPERATION CURRENCY': row.get('MAXIMUM OPERATION CURRENCY', ''),
                     'MAXIMUM OPERATION SIZE': row.get('MAXIMUM OPERATION SIZE', ''),
                     'MAXIMUM OPERATION MULTIPLIER': row.get('MAXIMUM OPERATION MULTIPLIER', ''),
-                    'release_date': int(datetime.now().strftime('%Y%m%d'))
+                    'release_date': ''  # Will be set below
                 }
                 processed_data.append(operation)
             
             logger.info(f"Successfully processed {len(processed_data)} operations")
+            
+            # Apply the extracted release date to all operations
+            if processed_data and extracted_release_date:
+                logger.info(f"Applying extracted release date {extracted_release_date} to all operations")
+                for operation in processed_data:
+                    operation['release_date'] = int(extracted_release_date)
+            elif processed_data:
+                # Fallback: use the old apply_release_date_to_operations method 
+                logger.warning("No release date extracted from Operation Period Details, using fallback method")
+                processed_data = self.apply_release_date_to_operations(processed_data, driver)
             
             if processed_data:
                 self.data = processed_data
@@ -409,6 +931,8 @@ class CombinedFRBNYScraper:
             
             if self.data:
                 self.source_type = 'pdf'
+                # For PDF, we'll use the old logic (max date) since we don't have web driver access
+                self.data = self.apply_release_date_to_operations(self.data, None)
             return self.data
             
         except Exception as e:
@@ -497,7 +1021,7 @@ class CombinedFRBNYScraper:
                 'OPERATION TYPE': '',
                 'SECURITY TYPE AND MATURITY': '',
                 'MATURITY RANGE': '',
-                'MAXIMUM OPERATION CURRENCY': '$',
+                'MAXIMUM OPERATION CURRENCY': '',
                 'MAXIMUM OPERATION SIZE': '',
                 'MAXIMUM OPERATION MULTIPLIER': '',
                 'release_date': ''
@@ -509,9 +1033,6 @@ class CombinedFRBNYScraper:
             # Extract amount
             all_text = self.combine_row_text(row1, row2)
             self.extract_pdf_amount(all_text, operation)
-            
-            # Set release date
-            operation['release_date'] = self.calculate_release_date(operation)
             
             if self.is_valid_pdf_operation(operation):
                 return operation
@@ -615,29 +1136,11 @@ class CombinedFRBNYScraper:
             'OPERATION TYPE': operation.get('OPERATION TYPE', ''),
             'SECURITY TYPE AND MATURITY': operation.get('SECURITY TYPE AND MATURITY', ''),
             'MATURITY RANGE': operation.get('MATURITY RANGE', ''),
-            'MAXIMUM OPERATION CURRENCY': operation.get('MAXIMUM OPERATION CURRENCY', '$'),
+            'MAXIMUM OPERATION CURRENCY': operation.get('MAXIMUM OPERATION CURRENCY', ''),
             'MAXIMUM OPERATION SIZE': operation.get('MAXIMUM OPERATION SIZE', ''),
             'MAXIMUM OPERATION MULTIPLIER': operation.get('MAXIMUM OPERATION MULTIPLIER', ''),
-            'release_date': self.calculate_release_date(operation)
+            'release_date': ''  # Will be set by apply_release_date_to_operations
         }
-
-    def calculate_release_date(self, operation: dict) -> str:
-        """Calculate release date"""
-        if operation.get('OPERATION DATE'):
-            try:
-                date_obj = datetime.strptime(operation['OPERATION DATE'], '%m/%d/%Y')
-                return str(int(date_obj.strftime('%Y%m%d')))
-            except ValueError:
-                pass
-        
-        if operation.get('SETTLEMENT DATE'):
-            try:
-                date_obj = datetime.strptime(operation['SETTLEMENT DATE'], '%m/%d/%Y')
-                return str(int(date_obj.strftime('%Y%m%d')))
-            except ValueError:
-                pass
-        
-        return str(int(datetime.now().strftime('%Y%m%d')))
 
     def is_valid_pdf_operation(self, operation: dict) -> bool:
         """Check if PDF operation is valid"""
@@ -672,23 +1175,38 @@ class CombinedFRBNYScraper:
             logger.error("No data to save")
             return False
         
-        # Convert to DataFrame if it's a list of dicts
-        if isinstance(self.data, list):
-            df = pd.DataFrame(self.data)
-        else:
-            df = self.data
+        # Standardize format before saving
+        standardized_data = self.standardize_output_format(self.data)
+        
+        fieldnames = [
+            'operation_date',
+            'operation_time', 
+            'settlement_date',
+            'operation_type',
+            'security_type_and_maturity',
+            'maturity_range',
+            'maximum_operation_currency',
+            'maximum_operation_size',
+            'maximum_operation_multiplier',
+            'release_date'
+        ]
+        
+        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
             
-        if df.empty:
-            logger.error("No data to save")
-            return False
+            for operation in standardized_data:
+                row = {}
+                for field in fieldnames:
+                    value = operation.get(field, '')
+                    # Clean up formatting - remove commas from string values
+                    if isinstance(value, str):
+                        value = value.replace(',', '').strip()
+                    row[field] = value
+                writer.writerow(row)
         
-        # Clean up formatting
-        df = df.map(lambda x: str(x).strip() if pd.notna(x) else "")
-        df = df.map(lambda x: x.replace(',', '') if isinstance(x, str) else x)
-        
-        df.to_csv(filename, index=False)
         logger.info(f"Data saved to {filename}")
-        logger.info(f"Shape: {df.shape}")
+        logger.info(f"Rows: {len(standardized_data)}")
         logger.info(f"Source: {self.source_type}")
         return True
 
@@ -731,33 +1249,11 @@ class CombinedFRBNYScraper:
     def to_csv(self, output_path: str) -> None:
         """Compatibility method for pipeline integration"""
         if self.data:
-            # Standardize format before saving
-            standardized_data = self.standardize_output_format(self.data)
-            
-            fieldnames = [
-                'operation_date',
-                'operation_time', 
-                'settlement_date',
-                'operation_type',
-                'security_type_and_maturity',
-                'maturity_range',
-                'maximum_operation_currency',
-                'maximum_operation_size',
-                'maximum_operation_multiplier',
-                'release_date'
-            ]
-            
-            with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-                
-                for operation in standardized_data:
-                    row = {}
-                    for field in fieldnames:
-                        row[field] = operation.get(field, '')
-                    writer.writerow(row)
-            
-            logger.info(f"Data exported to CSV: {output_path}")
+            # Use the save_to_csv method which handles standardization
+            original_filename = output_path
+            success = self.save_to_csv(original_filename)
+            if not success:
+                raise ValueError("Failed to save data to CSV")
         else:
             raise ValueError("No data to export")
 
@@ -800,7 +1296,11 @@ class FixedFRBNYParser:
                 for operation in self.data:
                     row = {}
                     for field in fieldnames:
-                        row[field] = operation.get(field, '')
+                        value = operation.get(field, '')
+                        # Clean up formatting
+                        if isinstance(value, str):
+                            value = value.replace(',', '').strip()
+                        row[field] = value
                     writer.writerow(row)
             
             logger.info(f"Data exported to CSV: {output_path}")
@@ -840,18 +1340,20 @@ class FixedFRBNYParser:
             print("  Type: " + operation.get('operation_type', 'N/A'))
             print("  Security: " + operation.get('security_type_and_maturity', 'N/A'))
             print("  Amount: " + operation.get('maximum_operation_currency', '') + str(operation.get('maximum_operation_size', 'N/A')) + " " + operation.get('maximum_operation_multiplier', ''))
+            print("  Release Date: " + str(operation.get('release_date', 'N/A')))
             print()
 
 
 def main():
     """Main function"""
-    parser = argparse.ArgumentParser(description='Complete FRBNY Treasury Securities Scraper')
+    parser = argparse.ArgumentParser(description='FIXED FRBNY Treasury Securities Scraper with Correct Release Date Extraction')
     parser.add_argument('--pdf', help='PDF file path for fallback')
     parser.add_argument('-o', '--output', help='Output CSV path', default='FEDAO_MOA_DATA.csv')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
     parser.add_argument('--url', help='FRBNY URL', 
                        default='https://www.newyorkfed.org/markets/domestic-market-operations/monetary-policy-implementation/treasury-securities/treasury-securities-operational-details')
     parser.add_argument('--legacy-mode', action='store_true', help='Use legacy FixedFRBNYParser interface')
+    parser.add_argument('--test-release-date', action='store_true', help='Test release date extraction only')
     
     args = parser.parse_args()
     
@@ -859,6 +1361,42 @@ def main():
         logging.getLogger().setLevel(logging.DEBUG)
     
     try:
+        if args.test_release_date:
+            # Test only the release date extraction
+            logger.info("🧪 Testing release date extraction only...")
+            scraper = CombinedFRBNYScraper()
+            
+            # Test the improved extraction method
+            release_date = scraper.extract_release_date_from_web_simple(args.url)
+            
+            if release_date:
+                logger.info(f"✅ Release date extraction test PASSED: {release_date}")
+                try:
+                    date_obj = datetime.strptime(release_date, '%Y%m%d')
+                    logger.info(f"📅 Parsed date: {date_obj.strftime('%B %d, %Y')}")
+                    
+                    # Expected: 20250714 (July 14, 2025) based on the HTML sample
+                    if release_date == "20250714":
+                        logger.info("🎯 PERFECT! Got expected release date 20250714 (July 14, 2025)")
+                    else:
+                        logger.warning(f"⚠️  Got {release_date}, expected 20250714")
+                        
+                except ValueError:
+                    logger.error("❌ Invalid date format returned")
+            else:
+                logger.error("❌ Release date extraction test FAILED")
+                
+                # Try BeautifulSoup as backup test
+                logger.info("🔄 Testing BeautifulSoup method...")
+                release_date_bs = scraper.extract_release_date_with_beautifulsoup(args.url)
+                
+                if release_date_bs:
+                    logger.info(f"✅ BeautifulSoup method PASSED: {release_date_bs}")
+                else:
+                    logger.error("❌ BeautifulSoup method also FAILED")
+            
+            return
+        
         if args.legacy_mode:
             # Use legacy interface for testing compatibility
             parser_instance = FixedFRBNYParser()
@@ -873,7 +1411,7 @@ def main():
             else:
                 logger.error("PDF path required in legacy mode")
         else:
-            # Use new interface
+            # Use new interface with FIXED release date extraction
             scraper = CombinedFRBNYScraper()
             success = scraper.run(args.url, args.pdf)
             
@@ -886,6 +1424,27 @@ def main():
                     print(f"📊 Source: {scraper.source_type}")
                     print(f"📈 Operations found: {len(scraper.data)}")
                     print(f"💾 Saved to: {args.output}")
+                    
+                    if scraper.data:
+                        # Show the release date that was applied
+                        sample_release_date = scraper.data[0].get('release_date', 'N/A')
+                        print(f"🗓️  Applied release date: {sample_release_date}")
+                        
+                        # Convert back to readable format
+                        if sample_release_date and sample_release_date != 'N/A':
+                            try:
+                                readable_date = datetime.strptime(str(sample_release_date), '%Y%m%d').strftime('%B %d, %Y')
+                                print(f"📅 Release date: {readable_date}")
+                                
+                                # Check if we got the expected date
+                                if str(sample_release_date) == "20250714":
+                                    print("✅ SUCCESS: Got expected release date 20250714 (July 14, 2025)")
+                                elif str(sample_release_date) == "20250620":
+                                    print("⚠️  WARNING: Got fallback current date instead of operation period end date")
+                                else:
+                                    print(f"ℹ️  INFO: Got release date {sample_release_date}")
+                            except:
+                                pass
                     
                     if scraper.data and args.verbose:
                         print(f"\n📋 Sample operation:")
@@ -909,3 +1468,29 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# USAGE EXAMPLES:
+#
+# 1. Test release date extraction only:
+#    python scraper.py --test-release-date
+#
+# 2. Run normal scraping with verbose output:
+#    python scraper.py -v
+#
+# 3. Run with PDF fallback:
+#    python scraper.py --pdf schedule.pdf
+#
+# 4. Test legacy mode:
+#    python scraper.py --legacy-mode --pdf schedule.pdf
+#
+# Expected output:
+# - Release date should be 20250714 (July 14, 2025) based on HTML: "6/13/2025 - 7/14/2025"
+# - Should NOT be 20250620 (current date fallback)
+#
+# Key improvements:
+# 1. Focuses on first <td> element only
+# 2. 30+ second wait times for dynamic content
+# 3. Multiple extraction strategies (regex + BeautifulSoup)
+# 4. Enhanced validation and error handling
+# 5. Better logging for debugging
+# 6. Test mode for verification
