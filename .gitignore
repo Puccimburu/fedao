@@ -183,3 +183,5 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+iam_policy.json/execo-harvey-3a8e84accf75.json
+*.json
