@@ -185,3 +185,5 @@ cython_debug/
 .pypirc
 iam_policy.json/execo-harvey-3a8e84accf75.json
 *.json
+fedao_env_py311/
+src/functions/scrape_fedao_sources/fedao_env_311/
