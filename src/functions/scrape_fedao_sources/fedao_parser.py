@@ -21,6 +21,7 @@ class FEDAOParser:
             'OperationDate',
             'OperationTime', 
             'Operation Type',
+            'Settlement Date',
             'Securities Included (CUSP)',
             'Security Maximums (Millions)',
             'OperationMaximum',
