@@ -1,0 +1,4 @@
+flask==2.3.*
+selenium==4.*
+webdriver-manager==3.*
+gunicorn==21.*
